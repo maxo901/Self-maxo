@@ -6,7 +6,9 @@ MAXO SELF - سلف اکانت یکپارچه تلگرام (Telethon)
 """
 
 import os
+import re
 import time
+import html as pyhtml
 import random
 import pickle
 import base64
@@ -17,11 +19,17 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from telethon import TelegramClient, events, utils as tl_utils
+from telethon.extensions import html as tl_html
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
 from telethon.tl.functions.contacts import BlockRequest, UnblockRequest
 from telethon.tl.functions.account import UpdateProfileRequest
-from telethon.tl.types import MessageEntityBold, MessageEntityBlockquote
+from telethon.tl.types import (
+    MessageEntityBold, MessageEntityBlockquote, MessageEntityCode,
+    MessageEntityUrl, MessageEntityMention, MessageEntityHashtag,
+    MessageEntityCashtag, MessageEntityBotCommand, MessageEntityEmail,
+    MessageEntityPhone,
+)
 
 
 # ============================================================
@@ -184,6 +192,7 @@ DEFAULT_SETTINGS = {
     "bio_font": "1",
     "bio_original": "",
     "archive_enabled": "1",
+    "chat_font": "0",
 }
 
 for _key, _value in DEFAULT_SETTINGS.items():
@@ -403,9 +412,38 @@ HELP = """
 ━━━━━━━━━━━━━━━━━━
 
 <b>📦 آرشیو پیام‌های حذف‌شده</b>
-هر پیام PV (متن، عکس، فیلم، ویس، حتی عکس/فیلم زمان‌دار) کش می‌شود؛
+هر پیام PV آدم‌ها (متن، عکس، فیلم، ویس، حتی عکس/فیلم زمان‌دار) کش می‌شود (پیام ربات‌ها نه)؛
 اگر طرف مقابل پاکش کند، خودش با فرستنده و زمان برات میاد اینجا.
 <code>آرشیو روشن</code> / <code>آرشیو خاموش</code>
+
+━━━━━━━━━━━━━━━━━━
+
+<b>🔤 فونت چت</b>
+<blockquote>هر پیامی که بفرستی (PV، گروه، کانال) همون لحظه با فونت انتخابی ویرایش می‌شه</blockquote>
+<code>فونت چت</code> — منو و حالت فعلی
+<code>فونت چت 1</code> — بولد
+<code>فونت چت 2</code> — کشیده (سـ‍ـلام)
+<code>فونت چت 3</code> — تکی (مونواسپیس)
+<code>فونت چت 4</code> — نقل قول
+<code>فونت چت 5</code> — نقل قول بولد
+<code>فونت چت 6</code> — کشیده فونت‌دار (کشیده + بولد + حروف انگلیسی فانتزی)
+<code>فونت چت خاموش</code> — غیرفعال
+<i>پیامی که خودت دستی فرمت زده باشی (بولد، لینک متنی...) و دستورها دست‌نخورده می‌مونن. فونت کشیده روی پیام‌های دارای لینک/منشن اعمال نمی‌شه.</i>
+
+━━━━━━━━━━━━━━━━━━
+
+<b>💥 اسپم (گروه / کانال)</b>
+<code>اسپم سلام 10</code> — ۱۰ بار «سلام» می‌فرسته (حداکثر ۱۵۰)
+روی یه پیام ریپلای کنی، اسپم‌ها هم ریپلای می‌شن.
+<code>توقف اسپم</code> — وسط کار متوقف می‌کنه
+<i>اگه فونت چت روشن باشه، اسپم‌ها هم با همون فونت فرستاده می‌شن</i>
+
+━━━━━━━━━━━━━━━━━━
+
+<b>🗂 چت فایل</b>
+<blockquote>داخل PV هر شخص بزن</blockquote>
+<code>چت فایل</code> (یا <code>-چت فایل-</code>) — کل چت رو با تاریخ شمسی/میلادی، ساعت دقیق، آیدی، اسم، ریپلای، فوروارد، ویرایش و ... به‌صورت فایل HTML دارک شبیه تلگرام می‌سازه و تو Saved Messages می‌فرسته.
+داخل فایل: انتخاب فونت (کلفت/نستعلیق/کوفی...)، سوییچ دارک/روشن، جستجو، و با تپ روی هر پیام جزئیاتش (ساعت با ثانیه، آیدی پیام و فرستنده).
 
 ━━━━━━━━━━━━━━━━━━
 
@@ -416,6 +454,26 @@ HELP = """
 
 ━━━━━━━━━━━━━━━━━━
 """
+
+
+async def reply_help(event):
+    """راهنما از حد ۴۰۹۶ کاراکتر تلگرام بیشتره؛ تکه‌تکه می‌فرستیم."""
+    sep = "━━━━━━━━━━━━━━━━━━"
+    sections = [s.strip() for s in HELP.split(sep) if s.strip()]
+    chunks, cur = [], ""
+    for sec in sections:
+        piece = sec + "\n\n" + sep + "\n\n"
+        if cur and len(cur) + len(piece) > 3000:
+            chunks.append(cur)
+            cur = ""
+        cur += piece
+    if cur:
+        chunks.append(cur)
+    for i, ch in enumerate(chunks):
+        if i == 0:
+            await event.reply(ch, parse_mode="html")
+        else:
+            await client.send_message("me", ch, parse_mode="html")
 
 
 # ============================================================
@@ -641,6 +699,10 @@ async def cache_incoming_message(event):
         message = event.message
         sender = await event.get_sender()
 
+        # فقط پیام آدم‌ها آرشیو می‌شه، ربات‌ها نه
+        if sender is None or getattr(sender, "bot", False):
+            return
+
         media_type = ""
         media_path = ""
 
@@ -786,6 +848,7 @@ async def send_delayed_autoreply(event, sender_id):
         if not raw_text:
             return
 
+        hold_style(event.chat_id, 8)
         await event.reply(raw_text, formatting_entities=entities)
         set_last_auto_reply(sender_id, int(time.time()))
 
@@ -820,7 +883,8 @@ async def status():
         f"<b>پاسخ خودکار:</b> {'🟢 روشن' if auto else '🔴 خاموش'} (استایل: {style_fa})\n"
         f"<b>ساعت در اسم:</b> {'🟢 روشن' if name_clock else '🔴 خاموش'}\n"
         f"<b>ساعت در بیو:</b> {'🟢 روشن' if bio_clock else '🔴 خاموش'}\n"
-        f"<b>آرشیو حذف‌شده‌ها:</b> {'🟢 روشن' if archive else '🔴 خاموش'}\n\n"
+        f"<b>آرشیو حذف‌شده‌ها:</b> {'🟢 روشن' if archive else '🔴 خاموش'}\n"
+        f"<b>فونت چت:</b> {CHAT_FONT_MODES.get(get_setting('chat_font', '0'), '🔴 خاموش')}\n\n"
         f"<b>پاسخ‌های ارسال‌شده:</b> {replies}\n"
         f"<b>PVهای ثبت‌شده:</b> {chats}\n"
         f"<b>کاربران بلاک:</b> {blocked}\n"
@@ -948,6 +1012,723 @@ async def clock_loop():
 
 
 # ============================================================
+# فونت چت (هر پیامی که می‌فرستی همون لحظه با استایل انتخابی ویرایش می‌شه)
+# ============================================================
+
+KASHIDA_COUNT = 2            # تعداد «ـ» بین حروف در حالت کشیده
+CHAT_FONT_MAX_LEN = 3800     # بیشتر از این طول، ویرایش نمی‌شه (حد تلگرام ۴۰۹۶)
+
+CHAT_FONT_MODES = {
+    "1": "بولد",
+    "2": "کشیده",
+    "3": "تکی",
+    "4": "نقل قول",
+    "5": "نقل قول بولد",
+    "6": "کشیده فونت دار",
+}
+
+
+def norm_fa(s):
+    s = (s or "").replace("\u200c", " ").replace("ـ", "")
+    s = s.replace("ي", "ی").replace("ك", "ک")
+    return " ".join(s.split())
+
+
+CHAT_FONT_BY_NAME = {norm_fa(v): k for k, v in CHAT_FONT_MODES.items()}
+
+_PERSIAN_LETTERS = set("آابپتثجچحخدذرزژسشصضطظعغفقکگلمنوهیئأإؤةكيء")
+_NON_JOINERS = set("ادذرزژوآأإؤةء")
+
+
+def kashida(text, n=KASHIDA_COUNT):
+    """بین حروف چسبان فارسی «ـ» می‌ذاره: سلام -> سـ‍ـلام (کشیده)"""
+    out = []
+    for i, ch in enumerate(text):
+        out.append(ch)
+        if i + 1 >= len(text):
+            continue
+        nxt = text[i + 1]
+        if ch in _PERSIAN_LETTERS and ch not in _NON_JOINERS and nxt in _PERSIAN_LETTERS:
+            if ch == "ل" and nxt == "ا":
+                continue
+            out.append("ـ" * n)
+    return "".join(out)
+
+
+def build_mono_entity(text):
+    length = len(tl_utils.add_surrogate(text))
+    if length <= 0:
+        return []
+    return [MessageEntityCode(offset=0, length=length)]
+
+
+# فقط کاراکترهایی که خودشون به صورت خودکار ساخته می‌شن (لینک، منشن، هشتگ...)
+AUTO_ENTITY_TYPES = (
+    MessageEntityUrl, MessageEntityMention, MessageEntityHashtag,
+    MessageEntityCashtag, MessageEntityBotCommand, MessageEntityEmail,
+    MessageEntityPhone,
+)
+
+
+def style_chat_text(text, mode):
+    """(متن جدید، لیست انتیتی) برای حالت انتخابی. اگه حالت نامعتبر بود None."""
+    if mode == "1":
+        return text, build_bold_entity(text)
+    if mode == "2":
+        return kashida(text), []
+    if mode == "3":
+        return text, build_mono_entity(text)
+    if mode == "4":
+        return text, build_quote_entity(text)
+    if mode == "5":
+        return text, build_bold_entity(text) + build_quote_entity(text)
+    if mode == "6":
+        new = apply_font(kashida(text), 1)
+        return new, build_bold_entity(new)
+    return None
+
+
+# جلوگیری از ویرایش پیام‌هایی که خود ربات می‌فرسته (پاسخ خودکار، اسپم، ...)
+style_hold = {}
+
+
+def hold_style(chat_id, seconds=8):
+    style_hold[chat_id] = time.time() + seconds
+
+
+def clean_dashes(text):
+    return re.sub(r"^[\s\-–—_]+|[\s\-–—_]+$", "", text or "")
+
+
+SPAM_RE = re.compile(r"^اسپم\s+(.+?)\s+([0-9۰-۹]+)$", re.S)
+
+
+def looks_like_command(text):
+    """دستورهای PV / گروه که نباید با فونت چت ویرایش بشن."""
+    t = (text or "").strip()
+    if t in ("بلاک", "سکوت", "حذف سکوت", "حذف", "توقف اسپم"):
+        return True
+    if clean_dashes(t) == "چت فایل":
+        return True
+    if t.startswith("حذف "):
+        return True
+    if t.startswith("اسپم "):
+        return True
+    return False
+
+
+# ============================================================
+# اسپم در گروه / کانال:  «اسپم سلام 10»  (حداکثر ۱۵۰)
+# ============================================================
+
+SPAM_MAX = 150
+spam_running = set()
+spam_stop = set()
+
+
+async def delete_command_message(event):
+    try:
+        suppress_delete_ids.add(int(event.message.id))
+        await client.delete_messages(event.chat_id, [event.message.id], revoke=True)
+    except Exception as e:
+        print("DELETE CMD ERROR:", e)
+
+
+async def run_spam(chat_id, text, count, reply_to=None):
+    spam_running.add(chat_id)
+    spam_stop.discard(chat_id)
+    sent = 0
+    error = None
+
+    mode = get_setting("chat_font", "0")
+    styled = style_chat_text(text, mode) if mode != "0" else None
+    send_text, send_entities = styled if styled else (text, [])
+
+    try:
+        while sent < count:
+            if chat_id in spam_stop:
+                break
+            hold_style(chat_id, 8)
+            try:
+                await client.send_message(
+                    chat_id, send_text,
+                    formatting_entities=send_entities,
+                    reply_to=reply_to
+                )
+                sent += 1
+            except FloodWaitError as e:
+                await asyncio.sleep(e.seconds + 1)
+                continue
+            except Exception as e:
+                error = f"{type(e).__name__}: {str(e)[:300]}"
+                break
+            await asyncio.sleep(random.uniform(0.35, 0.7))
+    finally:
+        spam_running.discard(chat_id)
+        stopped = chat_id in spam_stop
+        spam_stop.discard(chat_id)
+
+    if error or stopped:
+        try:
+            note = "⛔ <b>اسپم متوقف شد.</b>" if stopped and not error else "❌ <b>اسپم نیمه‌کاره ماند.</b>"
+            note += f"\n<b>ارسال‌شده:</b> {sent} از {count}"
+            if error:
+                note += f"\n<code>{error}</code>"
+            await client.send_message("me", note, parse_mode="html")
+        except Exception:
+            pass
+
+# ============================================================
+# چت فایل: ساخت فایل HTML از کل چت (دارک، شبیه تلگرام) و ارسال به Saved Messages
+# ============================================================
+
+EXPORT_MAX_PHOTOS = 300                      # حداکثر تعداد عکسی که داخل فایل جاسازی می‌شود
+EXPORT_MAX_PHOTO_BYTES = 40 * 1024 * 1024    # حداکثر مجموع حجم عکس‌های جاسازی‌شده
+
+JALALI_MONTHS = ["فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+                 "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"]
+WEEKDAYS_FA = {0: "دوشنبه", 1: "سه‌شنبه", 2: "چهارشنبه", 3: "پنجشنبه",
+               4: "جمعه", 5: "شنبه", 6: "یکشنبه"}
+
+
+def to_fa_digits(s):
+    return str(s).translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹"))
+
+
+def gregorian_to_jalali(gy, gm, gd):
+    g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    if gy > 1600:
+        jy = 979
+        gy -= 1600
+    else:
+        jy = 0
+        gy -= 621
+    gy2 = gy + 1 if gm > 2 else gy
+    days = (365 * gy) + ((gy2 + 3) // 4) - ((gy2 + 99) // 100) + ((gy2 + 399) // 400) - 80 + gd + g_d_m[gm - 1]
+    jy += 33 * (days // 12053)
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+    if days < 186:
+        jm = 1 + days // 31
+        jd = 1 + days % 31
+    else:
+        jm = 7 + (days - 186) // 30
+        jd = 1 + (days - 186) % 30
+    return jy, jm, jd
+
+
+def jalali_short(dt):
+    jy, jm, jd = gregorian_to_jalali(dt.year, dt.month, dt.day)
+    return f"{jy}/{jm:02d}/{jd:02d}"
+
+
+def jalali_long(dt):
+    jy, jm, jd = gregorian_to_jalali(dt.year, dt.month, dt.day)
+    return to_fa_digits(f"{jd} {JALALI_MONTHS[jm - 1]} {jy}")
+
+
+def human_size(n):
+    try:
+        n = float(n)
+    except Exception:
+        return ""
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return ""
+
+
+def fmt_duration(sec):
+    try:
+        sec = int(sec)
+    except Exception:
+        return ""
+    h, rem = divmod(sec, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def esc(s):
+    return pyhtml.escape(str(s or ""), quote=True)
+
+
+ACTION_TEXT = {
+    "MessageActionScreenshotTaken": "📸 اسکرین‌شات از چت گرفته شد",
+    "MessageActionHistoryClear": "🧹 تاریخچه چت پاک شد",
+    "MessageActionContactSignUp": "🎉 مخاطب به تلگرام پیوست",
+    "MessageActionSetMessagesTTL": "⏱ تایمر حذف خودکار تغییر کرد",
+    "MessageActionChatCreate": "👥 گروه ساخته شد",
+    "MessageActionPinMessage": "📌 پیامی پین شد",
+    "MessageActionGiftPremium": "🎁 هدیه پریمیوم",
+    "MessageActionCustomAction": "🔔 پیام سیستمی",
+}
+
+
+def describe_action(action):
+    name = type(action).__name__
+    if name == "MessageActionPhoneCall":
+        kind = "تصویری" if getattr(action, "video", False) else "صوتی"
+        dur = getattr(action, "duration", None)
+        extra = f" — مدت {fmt_duration(dur)}" if dur else " — بی‌پاسخ/لغو"
+        return f"📞 تماس {kind}{extra}"
+    return ACTION_TEXT.get(name, f"🔔 پیام سیستمی ({name.replace('MessageAction', '')})")
+
+
+def describe_media(m):
+    """(آیکون، عنوان، توضیح) برای رسانه‌هایی که داخل فایل جاسازی نمی‌شن."""
+    f = getattr(m, "file", None)
+    dur = fmt_duration(getattr(f, "duration", None)) if f and getattr(f, "duration", None) else ""
+    size = human_size(getattr(f, "size", None)) if f and getattr(f, "size", None) else ""
+    sub = " · ".join(x for x in (dur, size) if x)
+
+    if m.photo:
+        return "🖼", "عکس", size
+    if m.sticker:
+        emoji = getattr(f, "emoji", "") or ""
+        return "🏷", f"استیکر {emoji}".strip(), ""
+    if m.video_note:
+        return "⭕", "ویدیو مسیج", sub
+    if m.voice:
+        return "🎤", "پیام صوتی", sub
+    if m.gif:
+        return "🎞", "گیف", sub
+    if m.video:
+        return "🎬", "ویدیو", sub
+    if m.audio:
+        title = getattr(f, "title", None) or getattr(f, "name", None) or "فایل صوتی"
+        return "🎵", title, sub
+    if m.document:
+        return "📄", getattr(f, "name", None) or "فایل", size
+    if m.contact:
+        c = m.contact
+        return "👤", f"مخاطب: {(c.first_name or '')} {(c.last_name or '')}".strip(), c.phone_number or ""
+    if m.venue:
+        return "📍", m.venue.title or "مکان", m.venue.address or ""
+    if m.geo:
+        return "📍", "موقعیت مکانی", f"{m.geo.lat:.5f}, {m.geo.long:.5f}"
+    if m.poll:
+        q = m.poll.poll.question
+        q = getattr(q, "text", q)
+        return "📊", f"نظرسنجی: {q}", ""
+    if m.dice:
+        return "🎲", f"{m.dice.emoticon} {m.dice.value}", ""
+    return "📎", "رسانه", ""
+
+
+async def fetch_photo_b64(m, budget):
+    if budget["count"] >= EXPORT_MAX_PHOTOS or budget["bytes"] >= EXPORT_MAX_PHOTO_BYTES:
+        return ""
+    for thumb in (1, 0):
+        try:
+            data = await client.download_media(m, file=bytes, thumb=thumb)
+            if data:
+                budget["count"] += 1
+                budget["bytes"] += len(data)
+                return base64.b64encode(data).decode("ascii")
+        except Exception:
+            continue
+    return ""
+
+
+async def message_to_item(m, me, other, budget):
+    out = bool(m.out)
+    who = me if out else other
+    ts = m.date.astimezone(TEHRAN)
+
+    item = {
+        "id": int(m.id),
+        "out": out,
+        "ts": ts,
+        "edit_ts": m.edit_date.astimezone(TEHRAN) if getattr(m, "edit_date", None) else None,
+        "sender_name": user_name(who),
+        "sender_username": getattr(who, "username", None) or "",
+        "sender_id": getattr(who, "id", 0),
+        "html": "",
+        "plain": (m.message or "").strip(),
+        "service": "",
+        "media": None,
+        "reply_id": None,
+        "fwd": "",
+        "reactions": "",
+        "web": None,
+    }
+
+    if getattr(m, "action", None):
+        item["service"] = describe_action(m.action)
+        return item
+
+    try:
+        if m.message:
+            item["html"] = tl_html.unparse(m.message, m.entities or []).replace("\n", "<br>")
+    except Exception:
+        item["html"] = esc(m.message).replace("\n", "<br>")
+
+    try:
+        if m.reply_to and getattr(m.reply_to, "reply_to_msg_id", None):
+            item["reply_id"] = int(m.reply_to.reply_to_msg_id)
+    except Exception:
+        pass
+
+    try:
+        if m.fwd_from:
+            fwd = m.forward
+            name = getattr(m.fwd_from, "from_name", None)
+            if not name and fwd is not None:
+                ent = getattr(fwd, "sender", None) or getattr(fwd, "chat", None)
+                name = tl_utils.get_display_name(ent) if ent else ""
+            item["fwd"] = name or "ناشناس"
+    except Exception:
+        item["fwd"] = "ناشناس"
+
+    try:
+        if m.reactions and m.reactions.results:
+            parts = []
+            for r in m.reactions.results:
+                emo = getattr(r.reaction, "emoticon", "") or "⭐"
+                parts.append(f"{emo} {r.count}")
+            item["reactions"] = "  ".join(parts)
+    except Exception:
+        pass
+
+    try:
+        if m.media:
+            if type(m.media).__name__ == "MessageMediaWebPage":
+                wp = getattr(m.media, "webpage", None)
+                if wp is not None and getattr(wp, "url", None):
+                    item["web"] = {
+                        "site": getattr(wp, "site_name", "") or "",
+                        "title": getattr(wp, "title", "") or "",
+                        "desc": (getattr(wp, "description", "") or "")[:300],
+                        "url": wp.url,
+                    }
+            else:
+                icon, title, sub = describe_media(m)
+                img = ""
+                if m.photo:
+                    img = await fetch_photo_b64(m, budget)
+                item["media"] = {"icon": icon, "title": title, "sub": sub, "img": img}
+    except Exception as e:
+        item["media"] = {"icon": "📎", "title": "رسانه", "sub": type(e).__name__, "img": ""}
+
+    return item
+
+
+EXPORT_CSS = """
+:root{--bg:#0e1621;--panel:#17212b;--in:#182533;--out:#2b5278;--text:#f5f5f5;--muted:#7f91a4;--accent:#6ab3f3;--line:#0b121a;--chip:rgba(24,37,51,.92);--font:'Vazirmatn',Tahoma,sans-serif}
+body.light{--bg:#dfe7ee;--panel:#ffffff;--in:#ffffff;--out:#eaffd0;--text:#101820;--muted:#6b7b8a;--accent:#2481cc;--line:#cfd9e2;--chip:rgba(255,255,255,.92)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--font);font-weight:600;line-height:1.9;font-size:15px}
+body.nasta .t{line-height:2.6}
+.top{position:sticky;top:0;z-index:20;background:var(--panel);border-bottom:1px solid var(--line);padding:8px 12px;display:flex;align-items:center;gap:10px;direction:ltr}
+.av{width:44px;height:44px;border-radius:50%;flex:none;background:linear-gradient(135deg,#6ab3f3,#2b5278);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:20px;color:#fff;overflow:hidden}
+.av img{width:100%;height:100%;object-fit:cover}
+.ti{flex:1;min-width:0;direction:rtl;text-align:right}
+.ti b{display:block;font-weight:900;font-size:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.5}
+.ti small{color:var(--muted);font-size:12px;line-height:1.4;display:block}
+.ctl{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.ctl select,.ctl button,.ctl input{background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:5px 8px;font-family:inherit;font-size:12px;font-weight:700}
+.ctl input{width:110px}
+.card{max-width:760px;margin:14px auto;background:var(--panel);border-radius:16px;padding:14px 16px;border:1px solid var(--line)}
+.card h2{margin:0 0 8px;font-weight:900;font-size:17px;font-family:'Lalezar','Vazirmatn',sans-serif}
+.row{display:flex;justify-content:space-between;gap:12px;padding:4px 0;border-bottom:1px dashed var(--line);font-size:13px}
+.row:last-child{border:0}.row span:first-child{color:var(--muted)}.row span:last-child{font-weight:800;direction:ltr;text-align:left;word-break:break-all}
+.chat{max-width:760px;margin:0 auto;padding:8px 10px 60px;direction:ltr}
+.date{position:sticky;top:62px;z-index:10;text-align:center;margin:14px 0 8px;direction:rtl}
+.date span{display:inline-block;background:var(--chip);color:var(--text);border-radius:14px;padding:2px 14px;font-size:12.5px;font-weight:800}
+.date small{color:var(--muted);font-weight:600;margin-right:6px}
+.m{display:flex;margin:2px 0}.m.out{justify-content:flex-end}.m.in{justify-content:flex-start}
+.b{max-width:84%;min-width:90px;padding:6px 10px 4px;border-radius:14px;position:relative;word-wrap:break-word;overflow-wrap:anywhere;box-shadow:0 1px 1px rgba(0,0,0,.25)}
+.in .b{background:var(--in);border-bottom-left-radius:4px}.out .b{background:var(--out);border-bottom-right-radius:4px}
+.nm{font-weight:900;color:var(--accent);font-size:13px;direction:rtl;text-align:right;line-height:1.6}
+.nm small{color:var(--muted);font-weight:600;font-size:10.5px;margin-right:6px;direction:ltr;display:inline-block}
+.t{unicode-bidi:plaintext;text-align:start;font-size:15.5px;white-space:normal}
+.t a{color:var(--accent)}.t code,.t pre{font-family:ui-monospace,Menlo,Consolas,monospace;background:rgba(127,145,164,.18);border-radius:6px;padding:0 4px;direction:ltr;unicode-bidi:plaintext}
+.t pre{display:block;padding:6px 8px;overflow:auto}
+.t blockquote{margin:4px 0;padding:2px 8px;border-inline-start:3px solid var(--accent);background:rgba(106,179,243,.10);border-radius:4px}
+.reply{display:block;border-right:3px solid var(--accent);background:rgba(106,179,243,.12);border-radius:6px;padding:2px 8px;margin:2px 0 4px;direction:rtl;text-align:right;text-decoration:none;color:var(--text);font-size:12.5px;line-height:1.6}
+.reply b{display:block;color:var(--accent);font-weight:900}.reply span{display:block;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60vw}
+.fwd{font-size:12px;color:var(--accent);font-weight:800;direction:rtl;text-align:right}
+.media{display:flex;gap:8px;align-items:center;background:rgba(127,145,164,.15);border-radius:10px;padding:6px 10px;margin:3px 0;direction:rtl}
+.media i{font-style:normal;font-size:22px}.media b{display:block;font-weight:800;font-size:13.5px;line-height:1.5}.media small{color:var(--muted);font-size:11.5px}
+.photo{display:block;max-width:100%;border-radius:10px;margin:3px 0}
+.web{border-right:3px solid var(--accent);padding:2px 8px;margin:4px 0;direction:rtl;text-align:right;font-size:13px;line-height:1.6}
+.web b{display:block;color:var(--accent);font-weight:900}.web span{color:var(--muted);font-size:12px}
+.rx{margin-top:3px;font-size:12px;direction:rtl;text-align:right}
+.ft{display:flex;justify-content:flex-end;gap:6px;align-items:center;color:var(--muted);font-size:11px;font-weight:600;direction:ltr;margin-top:1px}
+.out .ft{color:#a9c7e6}body.light .out .ft{color:#5a8a3a}
+.det{display:none;margin-top:3px;padding-top:3px;border-top:1px dashed rgba(127,145,164,.4);font-size:11px;color:var(--muted);direction:ltr;text-align:left;line-height:1.7;font-weight:600}
+.b.sel .det,body.alldet .det{display:block}
+.svc{text-align:center;margin:8px 0;direction:rtl}.svc span{display:inline-block;background:var(--chip);border-radius:14px;padding:2px 14px;font-size:12.5px;font-weight:800;color:var(--muted)}
+.hid{display:none!important}
+.foot{text-align:center;color:var(--muted);font-size:12px;padding:20px}
+"""
+
+EXPORT_JS = """
+const sel=document.getElementById('fontSel');
+sel.onchange=()=>{document.documentElement.style.setProperty('--font',sel.value);document.body.classList.toggle('nasta',sel.selectedOptions[0].dataset.nasta==='1');};
+document.getElementById('themeBtn').onclick=()=>document.body.classList.toggle('light');
+document.getElementById('detBtn').onclick=()=>document.body.classList.toggle('alldet');
+document.querySelectorAll('.b').forEach(b=>b.addEventListener('click',e=>{if(e.target.closest('a'))return;b.classList.toggle('sel');}));
+document.getElementById('q').addEventListener('input',e=>{
+  const q=e.target.value.trim().toLowerCase();
+  document.querySelectorAll('.m').forEach(m=>{m.classList.toggle('hid',q!==''&&!m.textContent.toLowerCase().includes(q));});
+});
+"""
+
+EXPORT_FONTS_LINK = (
+    "https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;800;900"
+    "&family=Lalezar&family=Aref+Ruqaa:wght@400;700&family=Noto+Kufi+Arabic:wght@400;700;900"
+    "&family=Noto+Nastaliq+Urdu:wght@400;700&display=swap"
+)
+
+
+def _render_bubble(item, prev, by_id):
+    cls = "out" if item["out"] else "in"
+    ts = item["ts"]
+    parts = [f'<div class="m {cls}" id="m{item["id"]}"><div class="b">']
+
+    new_run = (prev is None) or prev["out"] != item["out"] or prev["ts"].date() != ts.date() or prev.get("service")
+    if new_run:
+        uname = f' <small>@{esc(item["sender_username"])}</small>' if item["sender_username"] else ""
+        parts.append(
+            f'<div class="nm">{esc(item["sender_name"])}{uname}'
+            f' <small>ID: {item["sender_id"]}</small></div>'
+        )
+
+    if item["fwd"]:
+        parts.append(f'<div class="fwd">↪️ فوروارد از {esc(item["fwd"])}</div>')
+
+    if item["reply_id"]:
+        src = by_id.get(item["reply_id"])
+        if src:
+            snippet = src["plain"] or (src["media"]["title"] if src["media"] else "") or "پیام"
+            parts.append(
+                f'<a class="reply" href="#m{src["id"]}"><b>{esc(src["sender_name"])}</b>'
+                f'<span>{esc(snippet[:90])}</span></a>'
+            )
+        else:
+            parts.append('<div class="reply"><b>پاسخ</b><span>پیام اصلی در دسترس نیست</span></div>')
+
+    media = item["media"]
+    if media:
+        if media["img"]:
+            parts.append(f'<img class="photo" src="data:image/jpeg;base64,{media["img"]}" alt="photo">')
+        else:
+            sub = f'<small>{esc(media["sub"])}</small>' if media["sub"] else ""
+            parts.append(f'<div class="media"><i>{media["icon"]}</i><div><b>{esc(media["title"])}</b>{sub}</div></div>')
+
+    if item["web"]:
+        w = item["web"]
+        parts.append(
+            f'<div class="web"><span>{esc(w["site"])}</span><b>{esc(w["title"])}</b>'
+            f'<span>{esc(w["desc"])}</span><br><a href="{esc(w["url"])}" style="color:var(--accent)">{esc(w["url"][:70])}</a></div>'
+        )
+
+    if item["html"]:
+        parts.append(f'<div class="t" dir="auto">{item["html"]}</div>')
+
+    if item["reactions"]:
+        parts.append(f'<div class="rx">{esc(item["reactions"])}</div>')
+
+    edited = " · ✏️ ویرایش‌شده" if item["edit_ts"] else ""
+    parts.append(f'<div class="ft"><span>{ts.strftime("%H:%M")}{edited}</span></div>')
+
+    det = (
+        f'#{item["id"]} · {esc(item["sender_name"])} ({item["sender_id"]})<br>'
+        f'{jalali_short(ts)} · {ts.strftime("%Y-%m-%d %H:%M:%S")} (Tehran)'
+    )
+    if item["edit_ts"]:
+        det += f'<br>ویرایش: {jalali_short(item["edit_ts"])} · {item["edit_ts"].strftime("%Y-%m-%d %H:%M:%S")}'
+    parts.append(f'<div class="det">{det}</div>')
+
+    parts.append("</div></div>")
+    return "".join(parts)
+
+
+def render_chat_html(meta, items):
+    by_id = {it["id"]: it for it in items}
+    total = len(items)
+    mine = sum(1 for it in items if it["out"] and not it["service"])
+    theirs = sum(1 for it in items if not it["out"] and not it["service"])
+    photos = sum(1 for it in items if it["media"] and it["media"]["img"])
+    medias = sum(1 for it in items if it["media"])
+    first_ts = items[0]["ts"] if items else None
+    last_ts = items[-1]["ts"] if items else None
+
+    name = meta["name"]
+    initial = esc((name or "?")[:1])
+    avatar = (f'<img src="data:image/jpeg;base64,{meta["avatar"]}" alt="">' if meta.get("avatar") else initial)
+    sub = []
+    if meta.get("username"):
+        sub.append(f'@{esc(meta["username"])}')
+    sub.append(f'ID: {meta["id"]}')
+
+    out = []
+    out.append('<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="utf-8">')
+    out.append('<meta name="viewport" content="width=device-width,initial-scale=1">')
+    out.append(f'<title>چت با {esc(name)}</title>')
+    out.append('<link rel="preconnect" href="https://fonts.googleapis.com">')
+    out.append(f'<link href="{EXPORT_FONTS_LINK}" rel="stylesheet">')
+    out.append(f'<style>{EXPORT_CSS}</style></head><body>')
+
+    out.append('<div class="top">')
+    out.append('<div class="ctl">')
+    out.append('<input id="q" placeholder="🔍 جستجو">')
+    out.append('<select id="fontSel">'
+               '<option value="\'Vazirmatn\',Tahoma,sans-serif">وزیرمتن</option>'
+               '<option value="\'Lalezar\',\'Vazirmatn\',sans-serif">لاله‌زار (کلفت)</option>'
+               '<option value="\'Aref Ruqaa\',\'Vazirmatn\',serif">عارف رقعه</option>'
+               '<option value="\'Noto Kufi Arabic\',\'Vazirmatn\',sans-serif">کوفی</option>'
+               '<option value="\'Noto Nastaliq Urdu\',\'Vazirmatn\',serif" data-nasta="1">نستعلیق</option>'
+               '</select>')
+    out.append('<button id="themeBtn">🌓</button><button id="detBtn">ℹ️</button></div>')
+    out.append(f'<div class="ti"><b>{esc(name)}</b><small>{" · ".join(sub)}</small></div>')
+    out.append(f'<div class="av">{avatar}</div></div>')
+
+    rows = [
+        ("نام", meta["name"]),
+        ("یوزرنیم", f'@{meta["username"]}' if meta.get("username") else "ندارد"),
+        ("آیدی عددی", meta["id"]),
+        ("شماره", meta.get("phone") or "مخفی"),
+    ]
+    if meta.get("bio"):
+        rows.append(("بیو", meta["bio"]))
+    rows += [
+        ("اکانت من", f'{meta["me_name"]} · {meta["me_id"]}'),
+        ("کل پیام‌ها", f"{total}  (من: {mine} · طرف مقابل: {theirs})"),
+        ("رسانه‌ها", f"{medias}  (عکس جاسازی‌شده: {photos})"),
+    ]
+    if first_ts and last_ts:
+        rows.append(("اولین پیام", f'{jalali_short(first_ts)} · {first_ts.strftime("%Y-%m-%d %H:%M:%S")}'))
+        rows.append(("آخرین پیام", f'{jalali_short(last_ts)} · {last_ts.strftime("%Y-%m-%d %H:%M:%S")}'))
+    rows.append(("زمان ساخت فایل", f'{jalali_short(meta["generated"])} · {meta["generated"].strftime("%Y-%m-%d %H:%M:%S")}'))
+
+    out.append('<div class="card"><h2>📋 اطلاعات چت</h2>')
+    for k, v in rows:
+        out.append(f'<div class="row"><span>{esc(k)}</span><span>{esc(v)}</span></div>')
+    out.append('</div>')
+
+    out.append('<div class="chat">')
+    prev = None
+    last_date = None
+    for it in items:
+        d = it["ts"].date()
+        if d != last_date:
+            last_date = d
+            out.append(
+                f'<div class="date"><span>{jalali_long(it["ts"])}'
+                f'<small>{WEEKDAYS_FA[it["ts"].weekday()]} · {it["ts"].strftime("%Y-%m-%d")}</small></span></div>'
+            )
+            prev = None
+        if it["service"]:
+            out.append(f'<div class="svc"><span>{esc(it["service"])} · {it["ts"].strftime("%H:%M")}</span></div>')
+        else:
+            out.append(_render_bubble(it, prev, by_id))
+        prev = it
+    out.append('</div>')
+    out.append('<div class="foot">⚡ MAXO SELF</div>')
+    out.append(f'<script>{EXPORT_JS}</script></body></html>')
+    return "".join(out)
+
+
+async def export_chat_file(chat_id):
+    status_msg = None
+    try:
+        me = await client.get_me()
+        other = await client.get_entity(chat_id)
+
+        status_msg = await client.send_message(
+            "me", "⏳ <b>در حال ساخت فایل چت...</b>", parse_mode="html"
+        )
+
+        items = []
+        budget = {"count": 0, "bytes": 0}
+        async for m in client.iter_messages(chat_id, reverse=True):
+            items.append(await message_to_item(m, me, other, budget))
+            if len(items) % 500 == 0:
+                try:
+                    await status_msg.edit(
+                        f"⏳ <b>در حال ساخت فایل چت...</b>\n{len(items)} پیام خونده شد",
+                        parse_mode="html"
+                    )
+                except Exception:
+                    pass
+
+        phone = getattr(other, "phone", None)
+        bio = ""
+        try:
+            from telethon.tl.functions.users import GetFullUserRequest
+            full = await client(GetFullUserRequest(other))
+            bio = getattr(full.full_user, "about", "") or ""
+        except Exception:
+            pass
+
+        avatar = ""
+        try:
+            data = await client.download_profile_photo(other, file=bytes, download_big=False)
+            if data:
+                avatar = base64.b64encode(data).decode("ascii")
+        except Exception:
+            pass
+
+        meta = {
+            "name": user_name(other),
+            "username": getattr(other, "username", None) or "",
+            "id": other.id,
+            "phone": f"+{phone}" if phone else "",
+            "bio": bio,
+            "avatar": avatar,
+            "me_name": user_name(me),
+            "me_id": me.id,
+            "generated": datetime.now(TEHRAN),
+        }
+
+        html_text = render_chat_html(meta, items)
+
+        out_dir = Path(DATA_DIR) / "exports"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(TEHRAN).strftime("%Y%m%d_%H%M")
+        path = out_dir / f"chat_{other.id}_{stamp}.html"
+        path.write_text(html_text, encoding="utf-8")
+
+        caption = (
+            "🗂 <b>فایل چت آماده شد</b>\n"
+            f"<b>با:</b> {esc(meta['name'])}\n"
+            f"<b>ID:</b> <code>{other.id}</code>\n"
+            f"<b>تعداد پیام:</b> {len(items)}\n\n"
+            "<i>فایل رو با مرورگر باز کن (دارک، قابل جستجو، با تپ روی هر پیام جزئیاتش میاد).</i>"
+        )
+        await client.send_file("me", str(path), caption=caption, parse_mode="html", force_document=True)
+
+        try:
+            path.unlink()
+        except Exception:
+            pass
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+    except Exception as e:
+        print("EXPORT CHAT ERROR:", type(e).__name__, e)
+        try:
+            await client.send_message(
+                "me",
+                f"❌ <b>ساخت فایل چت ناموفق بود.</b>\n<code>{type(e).__name__}: {str(e)[:500]}</code>",
+                parse_mode="html"
+            )
+        except Exception:
+            pass
+
+
+
+# ============================================================
 # SAVED MESSAGES (دستورات)
 # ============================================================
 
@@ -982,7 +1763,42 @@ async def saved_messages(event):
 
     # -------- HELP --------
     if cmd in ("دستورات", "لیست دستورات", "لیست", "منو"):
-        await event.reply(HELP, parse_mode="html")
+        await reply_help(event)
+        return
+
+    # -------- فونت چت --------
+    norm_cmd = norm_fa(cmd)
+    if norm_cmd == "فونت چت" or norm_cmd.startswith("فونت چت "):
+        arg = normalize_number(norm_cmd[len("فونت چت"):].strip())
+
+        if arg in ("خاموش", "0", "حذف"):
+            set_setting("chat_font", "0")
+            await event.reply("🔴 <b>فونت چت خاموش شد.</b>", parse_mode="html")
+            return
+
+        mode = arg if arg in CHAT_FONT_MODES else CHAT_FONT_BY_NAME.get(arg)
+        if mode:
+            set_setting("chat_font", mode)
+            sample, sample_ents = style_chat_text("سلام، این یک نمونه است MAXO", mode)
+            await event.reply(
+                f"✅ <b>فونت چت:</b> {CHAT_FONT_MODES[mode]}\nاز الان هر پیامی بفرستی همون لحظه با این فونت ویرایش می‌شه. نمونه:",
+                parse_mode="html"
+            )
+            await client.send_message("me", sample, formatting_entities=sample_ents)
+            return
+
+        cur = CHAT_FONT_MODES.get(get_setting("chat_font", "0"), "خاموش")
+        lines = "\n".join(
+            f"<code>فونت چت {k}</code> — {v}" for k, v in CHAT_FONT_MODES.items()
+        )
+        await event.reply(
+            "🔤 <b>فونت چت</b>\n"
+            "<blockquote>هر پیامی که می‌فرستی همون لحظه با فونت انتخابی ویرایش می‌شه</blockquote>\n"
+            f"{lines}\n"
+            "<code>فونت چت خاموش</code> — غیرفعال\n\n"
+            f"<b>حالت فعلی:</b> {cur}",
+            parse_mode="html"
+        )
         return
 
     # -------- AUTO REPLY --------
@@ -1191,6 +2007,12 @@ async def private_handler(event):
                 print("UNMUTE PV ERROR:", e)
             return
 
+        # -------- چت فایل: ساخت HTML از کل این چت و ارسال به Saved Messages --------
+        if clean_dashes(text) == "چت فایل":
+            await delete_command_message(event)
+            asyncio.create_task(export_chat_file(event.chat_id))
+            return
+
         # -------- حذف سریع با ریپلای روی یک پیام خاص --------
         if text == "حذف" and event.is_reply:
             await delete_replied_message(event)
@@ -1256,6 +2078,97 @@ async def private_handler(event):
         return
 
     asyncio.create_task(send_delayed_autoreply(event, sender.id))
+
+
+# ============================================================
+# گروه / کانال: اسپم
+# ============================================================
+
+@client.on(events.NewMessage(outgoing=True))
+async def group_handler(event):
+    if event.is_private or event.chat_id == ME_ID:
+        return
+
+    text = (event.raw_text or "").strip()
+    if not text:
+        return
+
+    if text == "توقف اسپم":
+        spam_stop.add(event.chat_id)
+        await delete_command_message(event)
+        return
+
+    match = SPAM_RE.match(text)
+    if not match:
+        return
+
+    spam_text = match.group(1).strip()
+    count = int(normalize_number(match.group(2)))
+    if not spam_text or count < 1:
+        return
+    count = min(count, SPAM_MAX)
+
+    await delete_command_message(event)
+
+    if event.chat_id in spam_running:
+        return
+
+    reply_to = event.message.reply_to_msg_id
+    asyncio.create_task(run_spam(event.chat_id, spam_text, count, reply_to))
+
+
+# ============================================================
+# فونت چت: ویرایش آنی پیام‌های خودم با استایل انتخابی
+# ============================================================
+
+@client.on(events.NewMessage(outgoing=True))
+async def chat_font_handler(event):
+    mode = get_setting("chat_font", "0")
+    if mode not in CHAT_FONT_MODES:
+        return
+    if event.chat_id == ME_ID:
+        return
+    if time.time() < style_hold.get(event.chat_id, 0):
+        return
+
+    msg = event.message
+    text = msg.message or ""
+    if not text or len(text) > CHAT_FONT_MAX_LEN:
+        return
+    if text.startswith("/") or looks_like_command(text):
+        return
+    if msg.fwd_from or getattr(msg, "via_bot_id", None):
+        return
+
+    entities = list(msg.entities or [])
+    # اگه خودم دستی فرمت زده باشم (بولد، لینک متنی، ...) دست نمی‌زنم
+    if any(not isinstance(e, AUTO_ENTITY_TYPES) for e in entities):
+        return
+    # حالت‌هایی که متن رو تغییر می‌دن با لینک/منشن/هشتگ جور درنمیان
+    if mode in ("2", "6") and entities:
+        return
+
+    try:
+        chat = await event.get_chat()
+        if getattr(chat, "bot", False):
+            return
+    except Exception:
+        pass
+
+    styled = style_chat_text(text, mode)
+    if not styled:
+        return
+    new_text, new_entities = styled
+
+    try:
+        await client.edit_message(
+            event.chat_id, msg,
+            new_text,
+            formatting_entities=entities + new_entities
+        )
+    except Exception as e:
+        if type(e).__name__ != "MessageNotModifiedError":
+            print("CHAT FONT EDIT ERROR:", type(e).__name__, e)
 
 
 # ============================================================
