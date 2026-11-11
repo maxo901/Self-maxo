@@ -1637,11 +1637,12 @@ def render_chat_html(meta, items):
     return "".join(out)
 
 
-async def export_chat_file(chat_id):
+async def export_chat_file(chat_id, other=None):
     status_msg = None
     try:
         me = await client.get_me()
-        other = await client.get_entity(chat_id)
+        if other is None:
+            other = await client.get_entity(chat_id)
 
         status_msg = await client.send_message(
             "me", "⏳ <b>در حال ساخت فایل چت...</b>", parse_mode="html"
@@ -1649,7 +1650,7 @@ async def export_chat_file(chat_id):
 
         items = []
         budget = {"count": 0, "bytes": 0}
-        async for m in client.iter_messages(chat_id, reverse=True):
+        async for m in client.iter_messages(other, reverse=True):
             items.append(await message_to_item(m, me, other, budget))
             if len(items) % 500 == 0:
                 try:
@@ -1972,7 +1973,7 @@ async def private_handler(event):
         # -------- بلاک همین PV --------
         if text == "بلاک":
             try:
-                user = await client.get_entity(event.chat_id)
+                user = await event.get_chat()
                 result = await block_user(user)
                 suppress_delete_ids.add(int(event.message.id))
                 await event.reply(result, parse_mode="html")
@@ -1983,7 +1984,7 @@ async def private_handler(event):
         # -------- سکوت همین PV --------
         if text == "سکوت":
             try:
-                user = await client.get_entity(event.chat_id)
+                user = await event.get_chat()
                 add_mute(user)
                 suppress_delete_ids.add(int(event.message.id))
                 await client.delete_messages(event.chat_id, [event.message.id], revoke=True)
@@ -2010,7 +2011,11 @@ async def private_handler(event):
         # -------- چت فایل: ساخت HTML از کل این چت و ارسال به Saved Messages --------
         if clean_dashes(text) == "چت فایل":
             await delete_command_message(event)
-            asyncio.create_task(export_chat_file(event.chat_id))
+            try:
+                peer = await event.get_chat()
+            except Exception:
+                peer = None
+            asyncio.create_task(export_chat_file(event.chat_id, peer))
             return
 
         # -------- حذف سریع با ریپلای روی یک پیام خاص --------
